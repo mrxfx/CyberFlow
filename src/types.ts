@@ -12,7 +12,8 @@ export interface Job {
   paperSize: "A4" | "A3" | "Legal" | "Letter";
   sideMode: "single" | "double";
   notes?: string;
-  status: "Waiting" | "Printing" | "Completed" | "Cancelled" | "Expired";
+  status: "Uploading" | "Waiting" | "Printing" | "Completed" | "Cancelled" | "Expired";
+  uploadProgress?: number;
   createdAt: string;
   pagesCount: number;
   assignedPrinter: string;
@@ -45,6 +46,16 @@ export interface ShopSettings {
   autoPrint: boolean;
   deleteAfterPrint: boolean;
   gstPercent: number;
+  defaultCopies?: number;
+  defaultColorMode?: "bw" | "color";
+  defaultPaperSize?: "A4" | "A3" | "Legal" | "Letter";
+  defaultSideMode?: "single" | "double";
+  maxAllowedCopies?: number;
+  allowA4?: boolean;
+  allowA3?: boolean;
+  allowLegal?: boolean;
+  allowLetter?: boolean;
+  maxFileSizeMB?: number;
 }
 
 export interface AnalyticsStats {
@@ -54,6 +65,34 @@ export interface AnalyticsStats {
   completedJobsCount: number;
   topServices: { name: string; count: number }[];
   dailyRevenue: { date: string; "Print Revenue": number; "CSC Revenue": number; Total: number }[];
+}
+
+export interface ServiceOption {
+  id: string;
+  label: string;
+  price: number;
+}
+
+export interface Service {
+  id: string;
+  name: string;
+  description: string;
+  icon?: string;
+  enabled: boolean;
+  supportedFormats?: string;
+  pricingType: "per-page" | "options" | "scan" | "fixed";
+  
+  // Pricing configuration
+  priceBW?: number;
+  priceColor?: number;
+  
+  priceSingle?: number;
+  priceMulti?: number;
+  
+  priceFixed?: number;
+  
+  options?: ServiceOption[];
+  pricingRules?: string;
 }
 
 export type ViewState = "home" | "admin" | "upload" | "status";

@@ -8,8 +8,8 @@ const app = express();
 const PORT = 3000;
 
 // Increase payload limit for base64 file uploads
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ limit: "50mb", extended: true }));
+app.use(express.json({ limit: "150mb" }));
+app.use(express.urlencoded({ limit: "150mb", extended: true }));
 
 // --- TYPES ---
 interface Job {
@@ -26,7 +26,8 @@ interface Job {
   paperSize: "A4" | "A3" | "Legal" | "Letter";
   sideMode: "single" | "double";
   notes?: string;
-  status: "Waiting" | "Printing" | "Completed" | "Cancelled" | "Expired";
+  status: "Uploading" | "Waiting" | "Printing" | "Completed" | "Cancelled" | "Expired";
+  uploadProgress?: number;
   createdAt: string; // ISO string
   pagesCount: number;
   assignedPrinter: string;
@@ -59,6 +60,16 @@ interface ShopSettings {
   autoPrint: boolean;
   deleteAfterPrint: boolean;
   gstPercent: number;
+  defaultCopies: number;
+  defaultColorMode: "bw" | "color";
+  defaultPaperSize: "A4" | "A3" | "Legal" | "Letter";
+  defaultSideMode: "single" | "double";
+  maxAllowedCopies: number;
+  allowA4: boolean;
+  allowA3: boolean;
+  allowLegal: boolean;
+  allowLetter: boolean;
+  maxFileSizeMB?: number;
 }
 
 // --- GLOBAL DATABASE (IN-MEMORY) ---
@@ -288,7 +299,170 @@ let settingsDb: ShopSettings = {
   autoPrint: false,
   deleteAfterPrint: true,
   gstPercent: 18,
+  defaultCopies: 1,
+  defaultColorMode: "bw",
+  defaultPaperSize: "A4",
+  defaultSideMode: "single",
+  maxAllowedCopies: 50,
+  allowA4: true,
+  allowA3: true,
+  allowLegal: true,
+  allowLetter: true,
+  maxFileSizeMB: 50,
 };
+
+// --- DYNAMIC SERVICES INTERFACES & DATABASE ---
+interface ServiceOption {
+  id: string;
+  label: string;
+  price: number;
+}
+
+interface Service {
+  id: string;
+  name: string;
+  description: string;
+  icon?: string;
+  enabled: boolean;
+  supportedFormats?: string;
+  pricingType: "per-page" | "options" | "scan" | "fixed";
+  priceBW?: number;
+  priceColor?: number;
+  priceSingle?: number;
+  priceMulti?: number;
+  priceFixed?: number;
+  options?: ServiceOption[];
+  pricingRules?: string;
+}
+
+let servicesDb: Service[] = [
+  {
+    id: "print",
+    name: "Print Documents",
+    description: "High-quality document printing from PDF, DOCX, or Image files.",
+    icon: "Printer",
+    enabled: true,
+    supportedFormats: "PDF, DOCX, Images",
+    pricingType: "per-page",
+    priceBW: 5,
+    priceColor: 15,
+  },
+  {
+    id: "passport-photo",
+    name: "Passport Size Photo",
+    description: "Professional passport-size photo printing. Choose physical package sets.",
+    icon: "Image",
+    enabled: true,
+    supportedFormats: "Camera Capture / Upload",
+    pricingType: "options",
+    options: [
+      { id: "p2", label: "2 Photos", price: 15 },
+      { id: "p4", label: "4 Photos", price: 30 },
+      { id: "p6", label: "6 Photos", price: 40 },
+      { id: "p8", label: "8 Photos", price: 50 },
+      { id: "p12", label: "12 Photos", price: 70 }
+    ]
+  },
+  {
+    id: "xerox",
+    name: "Xerox / Photocopy",
+    description: "Physical photocopy of books, IDs, and certificates.",
+    icon: "Copy",
+    enabled: true,
+    supportedFormats: "Physical Document",
+    pricingType: "per-page",
+    priceBW: 2,
+    priceColor: 10,
+  },
+  {
+    id: "lamination",
+    name: "Lamination",
+    description: "Thermal protective sealing for certificates, ID cards, and custom sized sheets.",
+    icon: "Layers",
+    enabled: true,
+    supportedFormats: "Physical Document",
+    pricingType: "options",
+    options: [
+      { id: "lam5", label: "A5 Size", price: 20 },
+      { id: "lam4", label: "A4 Size", price: 40 },
+      { id: "lam_legal", label: "Legal Size", price: 60 },
+      { id: "lam_id", label: "ID Card Size", price: 30 }
+    ]
+  },
+  {
+    id: "scan",
+    name: "Document Scan",
+    description: "Secure digitization of multi-page paper documents directly into a high-res PDF or JPEG.",
+    icon: "Scan",
+    enabled: true,
+    supportedFormats: "Physical Document",
+    pricingType: "scan",
+    priceSingle: 10,
+    priceMulti: 8,
+  },
+  {
+    id: "csc-pan",
+    name: "CSC - PAN Card",
+    description: "Official Permanent Account Number (PAN) Card registration assistance.",
+    icon: "FileText",
+    enabled: true,
+    pricingType: "fixed",
+    priceFixed: 120,
+  },
+  {
+    id: "csc-income",
+    name: "CSC - Income Certificate",
+    description: "Application facilitation for state income status recognition.",
+    icon: "FileText",
+    enabled: true,
+    pricingType: "fixed",
+    priceFixed: 50,
+  },
+  {
+    id: "csc-birth",
+    name: "CSC - Birth Certificate",
+    description: "Registration and document assistance for municipal birth records.",
+    icon: "FileText",
+    enabled: true,
+    pricingType: "fixed",
+    priceFixed: 80,
+  },
+  {
+    id: "csc-passport",
+    name: "CSC - Passport Form",
+    description: "Complete appointment booking and application validation for passports.",
+    icon: "FileText",
+    enabled: true,
+    pricingType: "fixed",
+    priceFixed: 200,
+  }
+];
+
+const SERVICES_FILE = path.join(process.cwd(), "services.json");
+
+function loadServices() {
+  try {
+    if (fs.existsSync(SERVICES_FILE)) {
+      const data = fs.readFileSync(SERVICES_FILE, "utf-8");
+      servicesDb = JSON.parse(data);
+    } else {
+      saveServices();
+    }
+  } catch (err) {
+    console.error("Error loading services.json:", err);
+  }
+}
+
+function saveServices() {
+  try {
+    fs.writeFileSync(SERVICES_FILE, JSON.stringify(servicesDb, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error saving services.json:", err);
+  }
+}
+
+// Initial load immediately
+loadServices();
 
 // --- GEMINI CLIENT LAZY INITIALIZATION ---
 let aiClient: GoogleGenAI | null = null;
@@ -321,21 +495,45 @@ function routePrinterAndEstimatePrice(
   let printer = "Black & White Laser";
   let price = 5;
 
-  if (serviceType === "Lamination") {
-    printer = "Hot Roll Laminator";
-    price = settingsDb.pricePerLamination * copies;
-    return { printer, price };
-  } else if (serviceType === "Passport Photo") {
-    printer = "Color Photo Printer";
-    price = settingsDb.pricePassportPhoto * copies;
-    return { printer, price };
-  } else if (serviceType === "Scanning") {
-    printer = "Flatbed Color Scanner";
-    price = settingsDb.pricePerScan * copies;
+  // Let's resolve the service dynamically from servicesDb!
+  const sName = serviceType.toLowerCase();
+  const service = servicesDb.find(s => s.id === sName || s.name.toLowerCase() === sName || sName.includes(s.id));
+
+  if (service) {
+    // Printer selection heuristics
+    if (service.id === "lamination") {
+      printer = "Hot Roll Laminator";
+    } else if (service.id === "passport-photo" || service.id.includes("photo")) {
+      printer = "Color Photo Printer";
+    } else if (service.id === "scan" || service.id.includes("scan")) {
+      printer = "Flatbed Color Scanner";
+    } else if (colorMode === "color" || (fileName && /\.(jpg|jpeg|png|webp|gif)$/i.test(fileName))) {
+      printer = "Color Inkjet Pro";
+    } else if (pages >= 15) {
+      printer = "Heavy-Duty Duplex Printer";
+    } else {
+      printer = "Black & White Laser";
+    }
+
+    // Dynamic price calculation
+    if (service.pricingType === "per-page") {
+      const perPagePrice = colorMode === "color" ? (service.priceColor ?? 15) : (service.priceBW ?? 5);
+      price = perPagePrice * pages * copies;
+    } else if (service.pricingType === "options") {
+      // default to first option price if no details
+      const defaultOptionPrice = service.options && service.options.length > 0 ? service.options[0].price : 15;
+      price = defaultOptionPrice * copies;
+    } else if (service.pricingType === "scan") {
+      const singlePagePrice = service.priceSingle ?? 10;
+      const multiPagePrice = service.priceMulti ?? 8;
+      price = (pages <= 1 ? singlePagePrice : pages * multiPagePrice) * copies;
+    } else if (service.pricingType === "fixed") {
+      price = (service.priceFixed ?? 100) * copies;
+    }
     return { printer, price };
   }
 
-  // File Heuristic Routing
+  // Fallback heuristic routing
   const isImage = fileName ? /\.(jpg|jpeg|png|webp|gif)$/i.test(fileName) : false;
   const isPdf = fileName ? /\.pdf$/i.test(fileName) : false;
 
@@ -355,6 +553,48 @@ function routePrinterAndEstimatePrice(
   }
 
   return { printer, price };
+}
+
+// --- REALTIME LIVE UPDATES (SSE) ---
+let sseClients: { id: string; res: any }[] = [];
+
+app.get("/api/live-updates", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+
+  const clientId = Date.now().toString() + Math.random().toString(36).substring(2, 7);
+  const newClient = { id: clientId, res };
+  sseClients.push(newClient);
+
+  // Send initial connection event
+  res.write(`data: ${JSON.stringify({ type: "connected", clientId })}\n\n`);
+
+  // Heartbeat to prevent connections from timing out
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(`data: ${JSON.stringify({ type: "heartbeat" })}\n\n`);
+    } catch (err) {
+      // client likely disconnected
+    }
+  }, 15000);
+
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    sseClients = sseClients.filter((c) => c.id !== clientId);
+  });
+});
+
+function broadcastEvent(type: string, data: any) {
+  const payload = JSON.stringify({ type, data });
+  sseClients.forEach((client) => {
+    try {
+      client.res.write(`data: ${payload}\n\n`);
+    } catch (err) {
+      // bad socket or closed connection
+    }
+  });
 }
 
 // --- BACKGROUND EXPIRY & PRINT SIMULATION LOOPS ---
@@ -386,6 +626,7 @@ setInterval(() => {
   const nextWaitingJob = jobsDb.find((job) => job.status === "Waiting");
   if (nextWaitingJob) {
     nextWaitingJob.status = "Printing";
+    broadcastEvent("job_updated", nextWaitingJob);
     console.log(`[Virtual Print Client] Auto-Printing job ${nextWaitingJob.id}...`);
 
     // Simulate print taking 5 seconds
@@ -399,6 +640,7 @@ setInterval(() => {
         } else {
           console.log(`[Virtual Print Client] Printed job ${updatedJob.id}`);
         }
+        broadcastEvent("job_updated", updatedJob);
       }
     }, 5000);
   }
@@ -409,6 +651,145 @@ setInterval(() => {
 // Jobs List
 app.get("/api/jobs", (req, res) => {
   res.json(jobsDb);
+});
+
+// Start an upload session
+app.post("/api/jobs/start-upload", (req, res) => {
+  const {
+    customerName,
+    phone,
+    serviceType,
+    fileName,
+    fileSize,
+    fileType,
+    copies,
+    colorMode,
+    paperSize,
+    sideMode,
+    notes,
+    pagesCount,
+    price,
+    isPriority,
+  } = req.body;
+
+  if (!customerName || !phone) {
+    return res.status(400).json({ error: "Customer Name and Phone are required." });
+  }
+
+  // Generate unique token
+  const tokenPrefix = "A";
+  const numStr = String(nextTokenNumber++).padStart(3, "0");
+  const id = `${tokenPrefix}${numStr}`;
+
+  const finalPages = parseInt(pagesCount) || 1;
+  const { printer } = routePrinterAndEstimatePrice(
+    serviceType || "Print",
+    fileName,
+    colorMode || "bw",
+    parseInt(copies) || 1,
+    finalPages
+  );
+
+  const newJob: Job = {
+    id,
+    customerName,
+    phone,
+    serviceType: serviceType || "Print",
+    fileName,
+    fileSize,
+    fileType,
+    copies: parseInt(copies) || 1,
+    colorMode: colorMode || "bw",
+    paperSize: paperSize || "A4",
+    sideMode: sideMode || "single",
+    notes,
+    status: "Uploading",
+    uploadProgress: 0,
+    createdAt: new Date().toISOString(),
+    pagesCount: finalPages,
+    assignedPrinter: printer,
+    price: parseFloat(price) || 0,
+    isPriority: !!isPriority,
+  };
+
+  jobsDb.unshift(newJob);
+
+  // Broadcast to admin dashboard
+  broadcastEvent("job_created", newJob);
+
+  res.json({
+    success: true,
+    token: id,
+    job: newJob,
+  });
+});
+
+// Update upload progress
+app.patch("/api/jobs/:id/progress", (req, res) => {
+  const { id } = req.params;
+  const { uploadProgress } = req.body;
+
+  const jobIndex = jobsDb.findIndex((j) => j.id === id);
+  if (jobIndex === -1) {
+    return res.status(404).json({ error: "Job not found." });
+  }
+
+  const job = jobsDb[jobIndex];
+  job.uploadProgress = parseInt(uploadProgress) || 0;
+  
+  if (job.uploadProgress >= 100) {
+    job.status = "Waiting";
+  }
+
+  broadcastEvent("job_updated", job);
+  res.json({ success: true, job });
+});
+
+// Finalize file upload and save file content
+app.post("/api/jobs/:id/complete-upload", (req, res) => {
+  const { id } = req.params;
+  const { fileData } = req.body;
+
+  const jobIndex = jobsDb.findIndex((j) => j.id === id);
+  if (jobIndex === -1) {
+    return res.status(404).json({ error: "Job not found." });
+  }
+
+  const job = jobsDb[jobIndex];
+  job.fileData = fileData;
+  job.uploadProgress = 100;
+  job.status = "Waiting"; // Transited from Uploading to Waiting
+
+  broadcastEvent("job_updated", job);
+
+  // If auto print is triggered synchronously, begin print cycle
+  if (settingsDb.autoPrint) {
+    setTimeout(() => {
+      const liveJob = jobsDb.find((j) => j.id === id);
+      if (liveJob && liveJob.status === "Waiting") {
+        liveJob.status = "Printing";
+        broadcastEvent("job_updated", liveJob);
+        
+        setTimeout(() => {
+          const printableJob = jobsDb.find((j) => j.id === id);
+          if (printableJob && printableJob.status === "Printing") {
+            printableJob.status = "Completed";
+            if (settingsDb.deleteAfterPrint) {
+              printableJob.fileData = undefined;
+            }
+            broadcastEvent("job_updated", printableJob);
+          }
+        }, 5000);
+      }
+    }, 1000);
+  }
+
+  res.json({
+    success: true,
+    job,
+    queuePosition: jobsDb.filter((j) => j.status === "Waiting").length,
+    estimatedWaitMinutes: jobsDb.filter((j) => j.status === "Waiting" || j.status === "Printing").length * 2,
+  });
 });
 
 // Create Job (Customer upload)
@@ -477,12 +858,16 @@ app.post("/api/jobs", (req, res) => {
 
   jobsDb.unshift(newJob); // Put at front of array for admin view
 
+  // Broadcast creation to all connected SSE listeners
+  broadcastEvent("job_created", newJob);
+
   // If auto print is triggered synchronously, begin print cycle
   if (settingsDb.autoPrint) {
     setTimeout(() => {
       const job = jobsDb.find((j) => j.id === id);
       if (job && job.status === "Waiting") {
         job.status = "Printing";
+        broadcastEvent("job_updated", job);
         setTimeout(() => {
           const printableJob = jobsDb.find((j) => j.id === id);
           if (printableJob && printableJob.status === "Printing") {
@@ -490,6 +875,7 @@ app.post("/api/jobs", (req, res) => {
             if (settingsDb.deleteAfterPrint) {
               printableJob.fileData = undefined;
             }
+            broadcastEvent("job_updated", printableJob);
           }
         }, 5000);
       }
@@ -544,6 +930,7 @@ app.patch("/api/jobs/:id", (req, res) => {
   }
 
   jobsDb[jobIndex] = updatedJob;
+  broadcastEvent("job_updated", updatedJob);
   res.json(updatedJob);
 });
 
@@ -554,7 +941,9 @@ app.delete("/api/jobs/:id", (req, res) => {
     return res.status(404).json({ error: "Job not found." });
   }
 
+  const deletedId = jobsDb[jobIndex].id;
   jobsDb.splice(jobIndex, 1);
+  broadcastEvent("job_deleted", { id: deletedId });
   res.json({ success: true, message: "Job deleted successfully." });
 });
 
@@ -604,6 +993,52 @@ app.get("/api/settings", (req, res) => {
 app.post("/api/settings", (req, res) => {
   settingsDb = { ...settingsDb, ...req.body };
   res.json(settingsDb);
+});
+
+// --- SERVICES ENDPOINTS ---
+app.get("/api/services", (req, res) => {
+  res.json(servicesDb);
+});
+
+app.post("/api/services", (req, res) => {
+  const newService = req.body;
+  if (!newService.id || !newService.name) {
+    return res.status(400).json({ error: "Service ID and Name are required." });
+  }
+  // Convert ID to a clean slug
+  newService.id = newService.id.toLowerCase().replace(/\s+/g, "-");
+  
+  if (servicesDb.some(s => s.id === newService.id)) {
+    return res.status(400).json({ error: "A service with this ID already exists." });
+  }
+  
+  servicesDb.push(newService);
+  saveServices();
+  res.status(201).json(newService);
+});
+
+app.put("/api/services/:id", (req, res) => {
+  const { id } = req.params;
+  const idx = servicesDb.findIndex(s => s.id === id);
+  if (idx === -1) {
+    return res.status(404).json({ error: "Service not found." });
+  }
+  
+  servicesDb[idx] = { ...servicesDb[idx], ...req.body };
+  saveServices();
+  res.json(servicesDb[idx]);
+});
+
+app.delete("/api/services/:id", (req, res) => {
+  const { id } = req.params;
+  const idx = servicesDb.findIndex(s => s.id === id);
+  if (idx === -1) {
+    return res.status(404).json({ error: "Service not found." });
+  }
+  
+  servicesDb.splice(idx, 1);
+  saveServices();
+  res.json({ success: true, message: "Service deleted successfully." });
 });
 
 // --- STATS / REPORTS ---
@@ -683,6 +1118,7 @@ app.post("/api/jobs/:id/print", (req, res) => {
   }
 
   job.status = "Printing";
+  broadcastEvent("job_updated", job);
   console.log(`[Virtual Client] Commencing manual print for token ${job.id}`);
 
   // Simulating the printing process
@@ -694,6 +1130,7 @@ app.post("/api/jobs/:id/print", (req, res) => {
         printableJob.fileData = undefined;
       }
       console.log(`[Virtual Client] Finished manual print for token ${printableJob.id}`);
+      broadcastEvent("job_updated", printableJob);
     }
   }, 4000);
 
