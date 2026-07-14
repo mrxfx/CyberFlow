@@ -1,0 +1,8 @@
+{
+  "name": "CyberFlow AI",
+  "description": "Premium SaaS Web App for Cyber Cafes, Printing Shops, and CSC Centers with Real-time Mobile Document Upload, Smart Print Queue, and AI Assistance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
